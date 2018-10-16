@@ -1,0 +1,11 @@
+{
+  "name": "s3fuse",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "dependencies": {
+    "aws-sdk": "^2.334.0",
+    "fuse-bindings": "^2.11.2",
+    "meow": "^5.0.0"
+  }
+}
