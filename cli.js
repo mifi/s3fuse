@@ -1,3 +1,6 @@
+#!/usr/bin/env node
+'use strict';
+
 const fuse = require('fuse-bindings');
 const meow = require('meow');
 const AWS = require('aws-sdk');
