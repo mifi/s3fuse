@@ -1,9 +1,8 @@
 {
   "name": "s3fuse",
-  "version": "1.0.0",
-  "main": "index.js",
-  "license": "MIT",
+  "version": "1.0.1",
   "main": "cli.js",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/mifi/s3fuse.git"
