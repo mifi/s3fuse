@@ -3,9 +3,29 @@
   "version": "1.0.0",
   "main": "index.js",
   "license": "MIT",
+  "main": "cli.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mifi/s3fuse.git"
+  },
+  "author": {
+    "name": "Mikael Finstad",
+    "email": "finstaden@gmail.com",
+    "url": "mifi.no"
+  },
+  "files": [
+    "cli.js"
+  ],
+  "bin": {
+    "s3fuse": "cli.js"
+  },
+  "engines": {
+    "node": ">=8"
+  },
   "dependencies": {
     "aws-sdk": "^2.334.0",
     "fuse-bindings": "^2.11.2",
+    "memoizee": "^0.4.14",
     "meow": "^5.0.0"
   }
 }

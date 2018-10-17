@@ -2,46 +2,43 @@ const fuse = require('fuse-bindings');
 const meow = require('meow');
 const AWS = require('aws-sdk');
 const fs = require('fs');
+const memoize = require('memoizee');
+
+
+// https://github.com/nodejs/node-v0.x-archive/issues/3045
+// https://github.com/mafintosh/fuse-bindings
 
 const cli = meow(`
   Usage
     $ s3fuse bucket-name /mnt/path
 
   Options
+    --cache-timeout seconds  How many seconds until directory caches time out (default 60, 0 disables cache)
 `);
-
-
-// https://github.com/nodejs/node-v0.x-archive/issues/3045
-// https://github.com/mafintosh/fuse-bindings
 
 const s3 = new AWS.S3();
 
-// cli.flags.x
+const cacheTimeout = (cli.flags.cacheTimeout ? parseInt(cli.flags.cacheTimeout, 10) : 60) * 1000;
 const bucket = cli.input[0];
 const mountPath = cli.input[1];
 
-// const attrs = {};
 
-// TODO use map instead
-// TODO cleanup after some time to prevent overgrowing
-// TODO invalidate cache logic
-const globalCache = {};
 
-const fds = {};
+// const fds = new Map();
 let fdCounter = 0;
 
 function openFile(path) {
   fdCounter++;
-  fds[fdCounter] = path;
+  // fds.set(fdCounter, path);
   return fdCounter;
 }
 
-function getFdPath(fd) {
-  return fds[fd];
+function closeFile(fd) {
+  // fds.delete(fd);
 }
 
-function getCached(path) {
-  return globalCache[path];
+function getFdPath(fd) {
+  return fds.get(fd);
 }
 
 const getDirAttrs = () => ({
@@ -66,11 +63,17 @@ const getFileAttrs = (size) => ({
   gid: process.getgid ? process.getgid() : 0,
 });
 
-async function fetchPath(path) {
-  const resp = await s3.listObjectsV2({ Bucket: bucket, Delimiter: '/', Prefix: path === '/' ? '' : `${path.replace(/^\//, '')}/` }).promise();
-  console.log('s3 response:', resp);
+async function fetchDir(path) {
+  console.log('Fetching', path);
 
-  // TODO IsTruncated
+  const pathWithoutLeadingSlash = path.replace(/^\//, '');
+
+  const resp = await s3.listObjectsV2({
+    Bucket: bucket,
+    Delimiter: '/',
+    Prefix: path === '/' ? '' : `${pathWithoutLeadingSlash}/`,
+  }).promise();
+  // console.log('s3 response:', resp);
 
   const files = resp.Contents.map(c => ({
     size: c.Size,
@@ -80,30 +83,25 @@ async function fetchPath(path) {
   }))
     .filter(f => f.name !== '');
 
-  const parsed = {
-    files: files,
-    subdirs: resp.CommonPrefixes.map(p => p.Prefix.replace(/\/$/, '').split('/').pop()),
+  const subdirs = resp.CommonPrefixes.map(p => p.Prefix.replace(/\/$/, '').split('/').pop())
+    .filter(d => d !== pathWithoutLeadingSlash);
+
+  return {
+    files,
+    subdirs,
   };
-  console.log('parsed', parsed);
-
-  globalCache[path] = parsed;
-
-  return parsed;
 }
+
+const fetchDirMemoized = memoize(fetchDir, { primitive: true, promise: true, maxAge: cacheTimeout });
 
 fuse.mount(mountPath, {
   readdir: async (path, cb) => {
     try {
       console.log('readdir(%s)', path)
 
-      let cached = getCached(path);
+      let dir = await fetchDirMemoized(path);
 
-      if (!cached) {
-        console.log('readdir not cached, need to fetch', path);
-        cached = await fetchPath(path);
-      }
-
-      const { files, subdirs } = cached;
+      const { files, subdirs } = dir;
       const allEntries = [...files.map(f => f.name), ...subdirs];
       console.log('readdir result', allEntries);
       return cb(0, allEntries);
@@ -117,30 +115,22 @@ fuse.mount(mountPath, {
     try {
       console.log('getattr(%s)', path)
 
-      /* if (path === '/') {
-        cb(0, getDirAttrs())
-        return
-      } */
-
-      let cached = getCached(path);
+      if (path === '/') {
+        return cb(0, getDirAttrs())
+      }
 
       // Optimization to respond when asking for something we obviously don't have
-      const match = path.match('(.+)/([^/]+)$');
+      const match = path.match('(.*)/([^/]+)$');
       if (match) {
-        const parentDir = match[1];
-        let parentCached = getCached(parentDir);
-
-        if (!parentCached) {
-          console.log('getattr parent not cached, need to fetch', path);
-          parentCached = await fetchPath(path);
-        }
+        const parentDirPath = match[1] || '/';
+        let parentDir = await fetchDirMemoized(parentDirPath);
 
         const fileName = match[2];
-        // console.log({ parentDir, fileName });
-        // console.log('parentCached files:', parentCached.files, 'dirs:', parentCached.dirs);
+        // console.log({ parentDirPath, fileName });
+        // console.log('parentDir files:', parentDir.files, 'subdirs:', parentDir.subdirs);
 
-        const dir = parentCached.subdirs.find(d => d === fileName);
-        const file = parentCached.files.find(f => f.name === fileName);
+        const dir = parentDir.subdirs.find(d => d === fileName);
+        const file = parentDir.files.find(f => f.name === fileName);
 
         if (dir) {
           console.log('path is a directory', path);
@@ -156,20 +146,6 @@ fuse.mount(mountPath, {
         return cb(fuse.ENOENT);
       }
 
-      if (!cached) {
-        console.log('getattr not cached, need to fetch', path);
-        cached = await fetchPath(path);
-      }
-
-      // TODO we can remove this, no?
-      if (cached.files.length > 1 || cached.subdirs.length > 0) {
-        console.log('path is a directory', path);
-        return cb(0, getDirAttrs());
-      } else if (cached.files.length === 1) {
-        console.log('path is a file', path);
-        return cb(0, getFileAttrs(12)); // TODO size
-      }
-
       return cb(fuse.ENOENT);
     } catch (err) {
       console.error(err);
@@ -177,10 +153,10 @@ fuse.mount(mountPath, {
     }
   },
 
-  open: function (path, flags, cb) {
+  open: (path, flags, cb) => {
     try {
       if (flags & 3 !== 0) return cb(fuse.EIO);
-      // TODO flags: only read supported, else return err
+
       console.log('open(%s, %d)', path, flags);
       const fd = openFile(path);
       cb(0, fd);
@@ -188,6 +164,12 @@ fuse.mount(mountPath, {
       console.error(err);
       cb(fuse.EIO);
     }
+  },
+
+  release: (path, fd, cb) => {
+    console.log('release(%s, %d)', path, fd);
+    closeFile(fd);
+    cb(0);
   },
 
   read: async (path, fd, buf, len, pos, cb) => {
@@ -215,7 +197,8 @@ fuse.mount(mountPath, {
 }, function (err) {
   if (err) throw err
   console.log('filesystem mounted on ' + mountPath)
-})
+});
+
 
 let sigIntReceived = false;
 
