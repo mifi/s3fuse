@@ -2,6 +2,17 @@
   "name": "s3fuse",
   "version": "1.0.2",
   "main": "cli.js",
+  "description": "Simple and stable Node.js implementation of read-only S3 file system",
+  "keywords": [
+   "s3fs",
+   "amazon",
+   "aws",
+   "s3",
+   "fs",
+   "file system",
+   "fuse",
+   "nodejs"
+ ],
   "license": "MIT",
   "repository": {
     "type": "git",
